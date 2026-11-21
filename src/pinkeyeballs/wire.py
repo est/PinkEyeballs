@@ -267,8 +267,9 @@ def build_query(name: str, rtype: int = TYPE_A, *, qid: int | None = None) -> by
     """Build a recursive DNS query for ``name``/``rtype``.
 
     The transaction ID is drawn from :mod:`secrets` unless ``qid`` is given, so
-    the answer is hard to spoof.  The returned bytes are ready for UDP, or for a
-    length-prefixed TCP exchange.
+    the answer is hard to spoof.  The flags are not libc's: every query is a
+    plain recursion-desired one, on every machine (see below).  The returned
+    bytes are ready for UDP, or for a length-prefixed TCP exchange.
     """
     if not 0 <= rtype <= 0xFFFF:
         raise QueryBuildError(f"record type out of range: {rtype}")
@@ -292,6 +293,13 @@ def build_query(name: str, rtype: int = TYPE_A, *, qid: int | None = None) -> by
         raise QueryBuildError(f"res_mkquery rejected {name!r}")
     message = bytearray(buffer[:length])
     message[0:2] = (secrets.randbits(16) if qid is None else qid).to_bytes(2, "big")
+    # libc leaks the local resolver's options into the header: it sets AD when
+    # the host has ``options trust-ad`` and CD when it has ``options dnssec``, so
+    # the query would differ from machine to machine.  This package never reads
+    # either bit back, and a measurement should not depend on the operator's
+    # ``resolv.conf``, so the flags are ours: one standard query, recursion
+    # desired, nothing else.
+    message[2:4] = FLAG_RD.to_bytes(2, "big")
     return bytes(message)
 
 

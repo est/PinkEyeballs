@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import struct
+from typing import Any
 
 import pytest
 
@@ -28,6 +29,34 @@ def test_build_query_header_and_question() -> None:
     assert flags == 0x0100  # recursion desired
     assert (qdcount, ancount, nscount, arcount) == (1, 0, 0, 0)
     assert query[12:] == encode_name("example.com") + struct.pack("!HH", TYPE_A, 1)
+
+
+def test_build_query_ignores_the_host_resolver_options(monkeypatch: pytest.MonkeyPatch) -> None:
+    """libc bakes the host's resolver options into the header, and we rub them out.
+
+    ``options trust-ad`` makes libc ask for AD, ``options dnssec`` makes it ask
+    for CD, so the same call would put different flags on the wire on different
+    machines.  A query from this package should look the same everywhere.
+    """
+    from_libc = (
+        struct.pack("!HHHHHH", 0x1234, 0x0120, 1, 0, 0, 0)
+        + encode_name("example.com")
+        + struct.pack("!HH", TYPE_A, 1)
+    )
+
+    def biased(*args: Any) -> int:
+        """A ``res_mkquery`` that answers like a host with ``trust-ad`` set."""
+        buffer = args[7]
+        for index, byte in enumerate(from_libc):
+            buffer[index] = byte
+        return len(from_libc)
+
+    monkeypatch.setattr("pinkeyeballs.wire._mkquery", lambda: biased)
+    assert build_query("example.com", TYPE_A, qid=0x1234) == (
+        struct.pack("!HHHHHH", 0x1234, 0x0100, 1, 0, 0, 0)
+        + encode_name("example.com")
+        + struct.pack("!HH", TYPE_A, 1)
+    )
 
 
 def test_build_query_gets_a_fresh_id_each_time() -> None:
